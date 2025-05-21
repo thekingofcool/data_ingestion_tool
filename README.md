@@ -16,7 +16,7 @@ This project provides a set of functionalities for ingesting data from Box into 
 To install the package, use the following command:
 
 ```bash
-pip install -e .
+pip install data_ingestion_tool
 ```
 
 ## Usage
@@ -24,16 +24,17 @@ pip install -e .
 To use the data ingestion tool, import the `execute_ingest` function from the `box_ingest` module and call it with the required parameters:
 
 ```python
-from data_ingest_tool.box_ingest import execute_ingest
+from data_ingestion_tool.box_ingest import execute_ingest
 
 execute_ingest(
     owner_name="your_owner_name",
     table_name="your_table_name",
     folder_id="your_folder_id",
     file_name_regex="your_file_name_regex",
+    sheet_name = 'your_excel_sheet_name',
     metadata={"your_metadata_key": "your_metadata_value"},
-    latest=True,
-    just_copy=False,
+    latest=False,
+    just_copy=True,
     delete=True
 )
 ```
@@ -44,6 +45,7 @@ execute_ingest(
 - `table_name`: The name of the table to which data will be ingested.
 - `folder_id`: The ID of the Box folder from which to download files.
 - `file_name_regex`: A regex pattern to match file names for downloading.
+- `sheet_name`: Excel sheet name if needed to be specified.
 - `metadata`: A dictionary containing metadata for data validation.
 - `latest`: A boolean indicating whether to download only the latest file.
 - `just_copy`: A boolean indicating whether to only copy files to S3 without processing.
