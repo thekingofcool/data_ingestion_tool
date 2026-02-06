@@ -6,12 +6,16 @@ import zipfile
 from boxsdk import Client, JWTAuth
 import pandas as pd
 from cerberus.client import CerberusClient
-from pyspark.sql.functions import current_timestamp
+from pyspark.sql.functions import current_timestamp, from_utc_timestamp
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def _log_task(catalog_name, schema_name, owner, spark, action, file_info):
-    spark.sql(f"INSERT INTO {catalog_name}.{schema_name}.box_ingestion_log (task_owner, job_action, log_info, process_dt) VALUES ('{owner}', '{action}', '{file_info}', current_timestamp())")
+    spark.sql(
+        f"""INSERT INTO {catalog_name}.{schema_name}.box_ingestion_log 
+        (task_owner, job_action, log_info, process_dt) VALUES 
+        ('{owner}', '{action}', '{file_info}', from_utc_timestamp(current_timestamp(), 'Asia/Shanghai'))"""
+    )
     logging.info(f"Owner: {owner}, Action: {action}, File Info: {file_info}")
     print(f"Owner: {owner}, Action: {action}, File Info: {file_info}")
 
@@ -119,12 +123,12 @@ def _validate_and_split_data(df, metadata, non_nullable_fields):
 
 def _write_to_delta_table(spark, df, catalog_name, schema_name, table_name, error_table):
     delta_table = f"{catalog_name}.{schema_name}.{table_name}{'_error' if error_table else ''}"
-    spark_df = spark.createDataFrame(df).withColumn("process_dt", current_timestamp())
+    spark_df = spark.createDataFrame(df).withColumn("process_dt", from_utc_timestamp(current_timestamp(), 'Asia/Shanghai'))
     spark_df.write.format("delta").mode("append").saveAsTable(delta_table)
     logging.info(f"Data written to {'error ' if error_table else ''}Delta table: {delta_table}")
     spark_df.unpersist()
 
-def _process_file(spark, owner, file_path, catalog_name, schema_name, table_name, metadata, just_copy, sheet_name):
+def _process_file(spark, owner, file_path, catalog_name, schema_name, table_name, metadata, just_copy, sheet_name, skip_rows):
     try:
         file_size = os.path.getsize(file_path)
         file_size_mb = file_size / (1024 * 1024)
@@ -139,17 +143,17 @@ def _process_file(spark, owner, file_path, catalog_name, schema_name, table_name
             for root, _, files in os.walk(temp_dir):
                 for file in files:
                     extracted_file_path = os.path.join(root, file)
-                    _process_file(spark, owner, extracted_file_path, catalog_name, schema_name, table_name, metadata, just_copy, sheet_name)
+                    _process_file(spark, owner, extracted_file_path, catalog_name, schema_name, table_name, metadata, just_copy, sheet_name, skip_rows)
             return
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
         elif file_path.endswith('.json'):
             df = pd.read_json(file_path)
-        elif file_path.endswith('.xlsx'):
+        elif file_path.endswith('.xlsx') or file_path.endswith('.xlsm'):
             if sheet_name:
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df = pd.read_excel(file_path, sheet_name=sheet_name, skiprows=skip_rows)
             else:
-                df = pd.read_excel(file_path)
+                df = pd.read_excel(file_path, skiprows=skip_rows)
         else:
             _log_task(catalog_name, schema_name, owner, spark, "Unsupported file type", f"{file_path} (Size: {file_size_mb:.2f} MB)")
             return
@@ -160,7 +164,7 @@ def _process_file(spark, owner, file_path, catalog_name, schema_name, table_name
             delta_table = f"{catalog_name}.{schema_name}.{table_name}"
             target_df = spark.table(delta_table)
             spark_schema = StructType([field for field in target_df.schema if field.name != 'process_dt'])
-            spark_df = spark.createDataFrame(df.astype(str), schema=spark_schema).withColumn("process_dt", current_timestamp())
+            spark_df = spark.createDataFrame(df.astype(str), schema=spark_schema).withColumn("process_dt", from_utc_timestamp(current_timestamp(), 'Asia/Shanghai'))
             spark_df.write.format("delta").mode("append").saveAsTable(delta_table)
             _log_task(catalog_name, schema_name, owner, spark, "File copied directly to Delta table", f"{file_path} (Size: {file_size_mb:.2f} MB)")
             return
@@ -173,7 +177,7 @@ def _process_file(spark, owner, file_path, catalog_name, schema_name, table_name
     except Exception as e:
         _log_task(catalog_name, schema_name, owner, spark, "Processing failed", f"{file_path}, Error: {str(e)}")
 
-def execute_ingest(owner, spark, table_name, folder_id, file_name_regex, sheet_name=None, metadata=None, latest=False, just_copy=True, delete=False):
+def execute_ingest(owner, spark, table_name, folder_id, file_name_regex, sheet_name=None, metadata=None, latest=False, just_copy=True, delete=False, skip_rows=None):
     client = _initialize_box_client()
     catalog_name = 'development' # dev
     schema_name = 'eda_gc_raw'
@@ -183,7 +187,7 @@ def execute_ingest(owner, spark, table_name, folder_id, file_name_regex, sheet_n
             _log_task(catalog_name, schema_name, owner, spark, "No files to process", table_name)
             return
         for file_path in files:
-            _process_file(spark, owner, file_path, catalog_name, schema_name, table_name, metadata, just_copy, sheet_name)
+            _process_file(spark, owner, file_path, catalog_name, schema_name, table_name, metadata, just_copy, sheet_name, skip_rows)
         if delete:
             _delete_file(catalog_name, schema_name, owner, spark, client, folder_id, file_name_regex, latest)
         _log_task(catalog_name, schema_name, owner, spark, "Ingest completed", table_name)
